@@ -1,6 +1,6 @@
 #!/bin/bash
 pwd
-attack_types=( "FigStep" "hades" "QR" ) #"hades" "Xidian" "Visual_Adv"
+attack_types=( "FigStep" "hades" "QR" ) #"hades" "imgjp" "Visual_Adv"
 target_models=( "minigpt4" ) #   "llava-v1.5"  "qwen-vl" "llava-v1.5" "llava-v1.6"
 defense_types=( "AdaShield" "JailGuard_img"   ) #   
 for defense_type in "${defense_types[@]}"
