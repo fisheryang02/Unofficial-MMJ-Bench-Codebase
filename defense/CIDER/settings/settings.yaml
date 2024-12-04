@@ -1,0 +1,10 @@
+harmbench_llama_path: /home/yjj/models/harmbench
+DnCNN_path: /home/yjj/MLLM-Jailbreak-evaluation-MMJ-Bench/CIDER/code/models/DnCNN/checkpoint.pth.tar
+Target_model_path: /home/yjj/models/llava-v1.5-7b-hf
+llava15_7b_hf_path: /home/yjj/models/llava-v1.5-7b-hf
+llava16_7b_hf_path:  /home/yjj/models/llava-1.6-vicuna-7b-hf
+instructblip_path:  /home/yjj/models/instructblip-vicuna-7b/
+minigpt4_path: /home/yjj/MLLM-Jailbreak-evaluation-MMJ-Bench/multimodalmodels/minigpt4/minigpt4_eval.yaml
+minigpt4_ckpt_path: /home/yjj/models/minigpt_ckp
+qwen_path: /home/yjj/models/qwen-vl/
+bert-base-uncased: /home/yjj/models/bert-base-uncased 

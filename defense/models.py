@@ -3,8 +3,13 @@ import os
 os.sys.path.append('./defense')
 os.sys.path.append('./defense/AdaShield')
 os.sys.path.append('./defense/JailGuard_main')
+os.sys.path.append('./defense/CIDER')
+os.sys.path.append('./defense/CIDER.code.models')
+os.sys.path.append('./defense/CIDER.code')
+
+
 from PIL import Image
-from AdaShield.adashield_defense import genereate_adashield_table
+from AdaShield.adashield_defense import genereate_adashield_table, Adashield_defense
 from JailGuard_main.JailGuard.main_img import jailguard_img
 # from JailGuard_main.JailGuard.main_txt import jailguard_txt
 from AdaShield.inference_attack_code.infer_figstep import get_all_defense_example_pool,retrival_defense_prompt,get_clip_embedding
@@ -12,8 +17,15 @@ import json
 import clip
 import csv
 from JailGuard_main.JailGuard.main_img import get_method,load_dirs_images,read_file_list,update_divergence,detect_attack
+from CIDER.code.utils import get_single_similarity_list,generate_denoised_img
+from CIDER.code.defender import Defender
+from CIDER.code.threshold_selection import generate_similarity_file
+from CIDER.code.cider_main import cider_main
 import uuid
-import spacy 
+import spacy
+import logging
+import pandas as pd
+import time
 en_core_web_sm_path='./defense/JailGuard_main/JailGuard/en_core_web_sm-3.7.1'
 class LLaVA_V1_5():
     def __init__(self,model_path,max_length,temperature,top_p,num_beams,max_new_tokens):
@@ -193,6 +205,10 @@ class LLaVA_V1_5():
         """
         jailguard_img(args,self)
         
+    def cider_defense(self,args,dataset="testset"):
+        generate_similarity_file(dataset,denoiser_device=0)
+        cider_main(args,'Visual_Adv',dataset,self.name,self.query)
+        
     def single_adashield_defense(self,attack_method,query,full_image_path):
         """use adashiled generated table to get a single response for only one test case
 
@@ -242,15 +258,15 @@ class LLaVA_V1_5():
         tmp_method=get_method(args.mutator)
         image = Image.open(image_path)
         original_image=image
-        os.makedirs(os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1]),exist_ok=True)
-        os.makedirs(os.path.join(args.response_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1]),exist_ok=True)
+        os.makedirs(os.path.join(args.variant_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0]),exist_ok=True)
+        os.makedirs(os.path.join(args.response_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0]),exist_ok=True)
         # print('attack_test_cases[k]',attack_test_cases[k])
         # folder_path=os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0])
         # for filename in os.listdir(folder_path):
         #     file_path = os.path.join(folder_path, filename)
         #     if os.path.isfile(file_path):
         #         os.remove(file_path)
-        target_dir = os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1])
+        target_dir = os.path.join(args.variant_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0])
         for i in range(number):
             uid_name=str(uuid.uuid4())[:4]
             output_img = tmp_method(image)
@@ -259,9 +275,9 @@ class LLaVA_V1_5():
         # Step2: query_model 
         variant_list, name_list= load_dirs_images(target_dir)
         prompt=query
-        new_save_dir=os.path.join(args.response_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1])
-        if not os.path.exists(new_save_dir):
-            os.makedirs(new_save_dir,exist_ok=True)
+        print("os.path.splitext(os.path.split(image_path)[-1])[0]",image_path,'*',image_path.split('.')[0],'*',os.path.splitext(os.path.split(image_path)[-1])[0])
+        new_save_dir=os.path.join(args.response_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0])
+
         name_list, variant_list = (a for a in zip(*sorted(zip(name_list,variant_list))))
         
         for j in range(len(variant_list)):
@@ -281,19 +297,41 @@ class LLaVA_V1_5():
         metric = spacy.load(en_core_web_sm_path)
         avail_dir=new_save_dir
         check_list=os.listdir(avail_dir)
+        print('new_save_dir',new_save_dir)
+        print('check_list',check_list)
         check_list=[os.path.join(avail_dir,check) for check in check_list]
         output_list=read_file_list(check_list)
         # print('output_list',output_list)
         max_div,jailbreak_keywords=update_divergence(output_list,self.name,avail_dir,diver_save_path,select_number=number,metric=metric)
-        detection_result=detect_attack(max_div,jailbreak_keywords,args.threshold)
+        detection_result=detect_attack(max_div,jailbreak_keywords,args.jailguard_threshold)
 
         if detection_result==True:
             return "I am sorry."
         else:
             return self.query(original_image,query)
 
-
-    
+    def single_cider_defense(self,args,query,image_path,dataset):
+        from CIDER.code.utils import get_single_similarity_list,generate_denoised_img
+        from CIDER.code.defender import Defender
+        defender = Defender()
+        image=Image.open(image_path)
+        os.makedirs(os.path.join('./defense/CIDER/temp_single_defense',os.path.splitext(os.path.split(image_path)[1])[0]),exist_ok=True)
+        denoised_img_save_dir=os.path.join('./defense/CIDER/temp_single_defense',os.path.splitext(os.path.split(image_path)[1])[0])
+        denoised_imgpth = generate_denoised_img(args.denoiser, imgpth=[image_path], save_dir=denoised_img_save_dir, cps=8, batch_size=50,device=args.cuda)
+        
+        data=pd.read_csv(f"./defense/CIDER/output/{dataset}_analysis/simmatrix_clean_val.csv")
+        defender.train(data)
+        args.cider_threshold=defender.threshold
+        cossim=get_single_similarity_list(args,query,denoised_img_save_dir)
+        # print(cossim)
+        # print('cossim.shape',cossim.shape)
+        cossim=pd.DataFrame(cossim[0])
+        detection_result=defender.predict(cossim)
+        # print(detection_result)
+        if detection_result[0]==True:
+            return "I am sorry."
+        else:
+            return self.query(image,query)
     
 class LLaVA_V1_6():
     def __init__(self,model_path,max_length,temperature,top_p,num_beams,max_new_tokens):
@@ -450,6 +488,10 @@ class LLaVA_V1_6():
     def jailguard_img_defense(self,args):
         jailguard_img(args,self)
 
+    def cider_defense(self,args,dataset="testset"):
+        generate_similarity_file(dataset,denoiser_device=0)
+        cider_main(args,'Visual_Adv',dataset,self.name,self.query)
+
     def single_adashield_defense(self,attack_method,query,full_image_path):
         """use adashiled generated table to get a single response for only one test case
 
@@ -499,15 +541,15 @@ class LLaVA_V1_6():
         tmp_method=get_method(args.mutator)
         image = Image.open(image_path)
         original_image=image
-        os.makedirs(os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1]),exist_ok=True)
-        os.makedirs(os.path.join(args.response_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1]),exist_ok=True)
+        os.makedirs(os.path.join(args.variant_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0]),exist_ok=True)
+        os.makedirs(os.path.join(args.response_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0]),exist_ok=True)
         # print('attack_test_cases[k]',attack_test_cases[k])
         # folder_path=os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0])
         # for filename in os.listdir(folder_path):
         #     file_path = os.path.join(folder_path, filename)
         #     if os.path.isfile(file_path):
         #         os.remove(file_path)
-        target_dir = os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1])
+        target_dir = os.path.join(args.variant_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0])
         for i in range(number):
             uid_name=str(uuid.uuid4())[:4]
             output_img = tmp_method(image)
@@ -516,9 +558,8 @@ class LLaVA_V1_6():
         # Step2: query_model 
         variant_list, name_list= load_dirs_images(target_dir)
         prompt=query
-        new_save_dir=os.path.join(args.response_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1])
-        if not os.path.exists(new_save_dir):
-            os.makedirs(new_save_dir,exist_ok=True)
+        new_save_dir=os.path.join(args.response_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0])
+
         name_list, variant_list = (a for a in zip(*sorted(zip(name_list,variant_list))))
         
         for j in range(len(variant_list)):
@@ -542,13 +583,35 @@ class LLaVA_V1_6():
         output_list=read_file_list(check_list)
         # print('output_list',output_list)
         max_div,jailbreak_keywords=update_divergence(output_list,self.name,avail_dir,diver_save_path,select_number=number,metric=metric)
-        detection_result=detect_attack(max_div,jailbreak_keywords,args.threshold)
+        detection_result=detect_attack(max_div,jailbreak_keywords,args.jailguard_threshold)
 
         if detection_result==True:
             return "I am sorry."
         else:
             return self.query(original_image,query)
-
+        
+    def single_cider_defense(self,args,query,image_path,dataset):
+        from CIDER.code.utils import get_single_similarity_list,generate_denoised_img
+        from CIDER.code.defender import Defender
+        defender = Defender()
+        image=Image.open(image_path)
+        os.makedirs(os.path.join('./defense/CIDER/temp_single_defense',os.path.splitext(os.path.split(image_path)[1])[0]),exist_ok=True)
+        denoised_img_save_dir=os.path.join('./defense/CIDER/temp_single_defense',os.path.splitext(os.path.split(image_path)[1])[0])
+        denoised_imgpth = generate_denoised_img(args.denoiser, imgpth=[image_path], save_dir=denoised_img_save_dir, cps=8, batch_size=50,device=args.cuda)
+        
+        data=pd.read_csv(f"./defense/CIDER/output/{dataset}_analysis/simmatrix_clean_val.csv")
+        defender.train(data)
+        args.cider_threshold=defender.threshold
+        cossim=get_single_similarity_list(args,query,denoised_img_save_dir)
+        # print(cossim)
+        # print('cossim.shape',cossim.shape)
+        cossim=pd.DataFrame(cossim[0])
+        detection_result=defender.predict(cossim)
+        # print(detection_result)
+        if detection_result[0]==True:
+            return "I am sorry."
+        else:
+            return self.query(image,query)
 
 
 class InstructBLIP():
@@ -700,6 +763,10 @@ class InstructBLIP():
     def jailguard_img_defense(self,args):
         jailguard_img(args,self)
 
+    def cider_defense(self,args,dataset="testset"):
+        generate_similarity_file(dataset,denoiser_device=0)
+        cider_main(args,'Visual_Adv',dataset,self.name,self.query)
+
     def single_adashield_defense(self,attack_method,query,full_image_path):
         """use adashiled generated table to get a single response for only one test case
 
@@ -749,15 +816,15 @@ class InstructBLIP():
         tmp_method=get_method(args.mutator)
         image = Image.open(image_path)
         original_image=image
-        os.makedirs(os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1]),exist_ok=True)
-        os.makedirs(os.path.join(args.response_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1]),exist_ok=True)
+        os.makedirs(os.path.join(args.variant_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0]),exist_ok=True)
+        os.makedirs(os.path.join(args.response_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0]),exist_ok=True)
         # print('attack_test_cases[k]',attack_test_cases[k])
         # folder_path=os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0])
         # for filename in os.listdir(folder_path):
         #     file_path = os.path.join(folder_path, filename)
         #     if os.path.isfile(file_path):
         #         os.remove(file_path)
-        target_dir = os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1])
+        target_dir = os.path.join(args.variant_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0])
         for i in range(number):
             uid_name=str(uuid.uuid4())[:4]
             output_img = tmp_method(image)
@@ -766,9 +833,8 @@ class InstructBLIP():
         # Step2: query_model 
         variant_list, name_list= load_dirs_images(target_dir)
         prompt=query
-        new_save_dir=os.path.join(args.response_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1])
-        if not os.path.exists(new_save_dir):
-            os.makedirs(new_save_dir,exist_ok=True)
+        new_save_dir=os.path.join(args.response_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0])
+
         name_list, variant_list = (a for a in zip(*sorted(zip(name_list,variant_list))))
         
         for j in range(len(variant_list)):
@@ -792,13 +858,35 @@ class InstructBLIP():
         output_list=read_file_list(check_list)
         # print('output_list',output_list)
         max_div,jailbreak_keywords=update_divergence(output_list,self.name,avail_dir,diver_save_path,select_number=number,metric=metric)
-        detection_result=detect_attack(max_div,jailbreak_keywords,args.threshold)
+        detection_result=detect_attack(max_div,jailbreak_keywords,args.jailguard_threshold)
 
         if detection_result==True:
             return "I am sorry."
         else:
             return self.query(original_image,query)
 
+    def single_cider_defense(self,args,query,image_path,dataset):
+        from CIDER.code.utils import get_single_similarity_list,generate_denoised_img
+        from CIDER.code.defender import Defender
+        defender = Defender()
+        image=Image.open(image_path)
+        os.makedirs(os.path.join('./defense/CIDER/temp_single_defense',os.path.splitext(os.path.split(image_path)[1])[0]),exist_ok=True)
+        denoised_img_save_dir=os.path.join('./defense/CIDER/temp_single_defense',os.path.splitext(os.path.split(image_path)[1])[0])
+        denoised_imgpth = generate_denoised_img(args.denoiser, imgpth=[image_path], save_dir=denoised_img_save_dir, cps=8, batch_size=50,device=args.cuda)
+        
+        data=pd.read_csv(f"./defense/CIDER/output/{dataset}_analysis/simmatrix_clean_val.csv")
+        defender.train(data)
+        args.cider_threshold=defender.threshold
+        cossim=get_single_similarity_list(args,query,denoised_img_save_dir)
+        # print(cossim)
+        # print('cossim.shape',cossim.shape)
+        cossim=pd.DataFrame(cossim[0])
+        detection_result=defender.predict(cossim)
+        # print(detection_result)
+        if detection_result[0]==True:
+            return "I am sorry."
+        else:
+            return self.query(image,query)
 class Qwen_VL_Chat():
     def __init__(self,model_path,max_length,temperature,top_p,num_beams,max_new_tokens):
         from transformers import AutoConfig,AutoTokenizer
@@ -956,6 +1044,10 @@ class Qwen_VL_Chat():
     def jailguard_img_defense(self,args):
         jailguard_img(args,self)
 
+    def cider_defense(self,args,dataset="testset"):
+        generate_similarity_file(dataset,denoiser_device=0)
+        cider_main(args,'Visual_Adv',dataset,self.name,self.query)
+
     def single_adashield_defense(self,attack_method,query,full_image_path):
         """use adashiled generated table to get a single response for only one test case
 
@@ -1005,15 +1097,15 @@ class Qwen_VL_Chat():
         tmp_method=get_method(args.mutator)
         image = Image.open(image_path)
         original_image=image
-        os.makedirs(os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1]),exist_ok=True)
-        os.makedirs(os.path.join(args.response_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1]),exist_ok=True)
+        os.makedirs(os.path.join(args.variant_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0]),exist_ok=True)
+        os.makedirs(os.path.join(args.response_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0]),exist_ok=True)
         # print('attack_test_cases[k]',attack_test_cases[k])
         # folder_path=os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0])
         # for filename in os.listdir(folder_path):
         #     file_path = os.path.join(folder_path, filename)
         #     if os.path.isfile(file_path):
         #         os.remove(file_path)
-        target_dir = os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1])
+        target_dir = os.path.join(args.variant_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0])
         for i in range(number):
             uid_name=str(uuid.uuid4())[:4]
             output_img = tmp_method(image)
@@ -1022,9 +1114,8 @@ class Qwen_VL_Chat():
         # Step2: query_model 
         variant_list, name_list= load_dirs_images(target_dir)
         prompt=query
-        new_save_dir=os.path.join(args.response_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1])
-        if not os.path.exists(new_save_dir):
-            os.makedirs(new_save_dir,exist_ok=True)
+        new_save_dir=os.path.join(args.response_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0])
+
         name_list, variant_list = (a for a in zip(*sorted(zip(name_list,variant_list))))
         
         for j in range(len(variant_list)):
@@ -1048,12 +1139,35 @@ class Qwen_VL_Chat():
         output_list=read_file_list(check_list)
         # print('output_list',output_list)
         max_div,jailbreak_keywords=update_divergence(output_list,self.name,avail_dir,diver_save_path,select_number=number,metric=metric)
-        detection_result=detect_attack(max_div,jailbreak_keywords,args.threshold)
+        detection_result=detect_attack(max_div,jailbreak_keywords,args.jailguard_threshold)
 
         if detection_result==True:
             return "I am sorry."
         else:
             return self.query(original_image,query)
+
+    def single_cider_defense(self,args,query,image_path,dataset):
+        from CIDER.code.utils import get_single_similarity_list,generate_denoised_img
+        from CIDER.code.defender import Defender
+        defender = Defender()
+        image=Image.open(image_path)
+        os.makedirs(os.path.join('./defense/CIDER/temp_single_defense',os.path.splitext(os.path.split(image_path)[1])[0]),exist_ok=True)
+        denoised_img_save_dir=os.path.join('./defense/CIDER/temp_single_defense',os.path.splitext(os.path.split(image_path)[1])[0])
+        denoised_imgpth = generate_denoised_img(args.denoiser, imgpth=[image_path], save_dir=denoised_img_save_dir, cps=8, batch_size=50,device=args.cuda)
+        
+        data=pd.read_csv(f"./defense/CIDER/output/{dataset}_analysis/simmatrix_clean_val.csv")
+        defender.train(data)
+        args.cider_threshold=defender.threshold
+        cossim=get_single_similarity_list(args,query,denoised_img_save_dir)
+        # print(cossim)
+        # print('cossim.shape',cossim.shape)
+        cossim=pd.DataFrame(cossim[0])
+        detection_result=defender.predict(cossim)
+        # print(detection_result)
+        if detection_result[0]==True:
+            return "I am sorry."
+        else:
+            return self.query(image,query)
 
 class MiniGPT4():
     def __init__(self,model_path,max_length,temperature,top_p,num_beams,max_new_tokens, **kwargs):
@@ -1195,6 +1309,11 @@ class MiniGPT4():
         
     def jailguard_img_defense(self,args):
         jailguard_img(args,self)
+        
+    def cider_defense(self,args,dataset="testset"):
+        generate_similarity_file(dataset,denoiser_device=0)
+        cider_main(args,'Visual_Adv',dataset,self.name,self.query)
+        
     def single_adashield_defense(self,attack_method,query,full_image_path):
         """use adashiled generated table to get a single response for only one test case
 
@@ -1244,15 +1363,15 @@ class MiniGPT4():
         tmp_method=get_method(args.mutator)
         image = Image.open(image_path)
         original_image=image
-        os.makedirs(os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1]),exist_ok=True)
-        os.makedirs(os.path.join(args.response_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1]),exist_ok=True)
+        os.makedirs(os.path.join(args.variant_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0]),exist_ok=True)
+        os.makedirs(os.path.join(args.response_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0]),exist_ok=True)
         # print('attack_test_cases[k]',attack_test_cases[k])
         # folder_path=os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0])
         # for filename in os.listdir(folder_path):
         #     file_path = os.path.join(folder_path, filename)
         #     if os.path.isfile(file_path):
         #         os.remove(file_path)
-        target_dir = os.path.join(args.variant_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1])
+        target_dir = os.path.join(args.variant_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0])
         for i in range(number):
             uid_name=str(uuid.uuid4())[:4]
             output_img = tmp_method(image)
@@ -1261,9 +1380,8 @@ class MiniGPT4():
         # Step2: query_model 
         variant_list, name_list= load_dirs_images(target_dir)
         prompt=query
-        new_save_dir=os.path.join(args.response_save_dir,self.name,args.attack_type,image_path.split('.')[0].split('/')[-1])
-        if not os.path.exists(new_save_dir):
-            os.makedirs(new_save_dir,exist_ok=True)
+        new_save_dir=os.path.join(args.response_save_dir,self.name,args.attack_type,os.path.splitext(os.path.split(image_path)[-1])[0])
+
         name_list, variant_list = (a for a in zip(*sorted(zip(name_list,variant_list))))
         
         for j in range(len(variant_list)):
@@ -1287,9 +1405,32 @@ class MiniGPT4():
         output_list=read_file_list(check_list)
         # print('output_list',output_list)
         max_div,jailbreak_keywords=update_divergence(output_list,self.name,avail_dir,diver_save_path,select_number=number,metric=metric)
-        detection_result=detect_attack(max_div,jailbreak_keywords,args.threshold)
+        detection_result=detect_attack(max_div,jailbreak_keywords,args.jailguard_threshold)
 
         if detection_result==True:
             return "I am sorry."
         else:
             return self.query(original_image,query)
+
+    def single_cider_defense(self,args,query,image_path,dataset):
+        from CIDER.code.utils import get_single_similarity_list,generate_denoised_img
+        from CIDER.code.defender import Defender
+        defender = Defender()
+        image=Image.open(image_path)
+        os.makedirs(os.path.join('./defense/CIDER/temp_single_defense',os.path.splitext(os.path.split(image_path)[1])[0]),exist_ok=True)
+        denoised_img_save_dir=os.path.join('./defense/CIDER/temp_single_defense',os.path.splitext(os.path.split(image_path)[1])[0])
+        denoised_imgpth = generate_denoised_img(args.denoiser, imgpth=[image_path], save_dir=denoised_img_save_dir, cps=8, batch_size=50,device=args.cuda)
+        
+        data=pd.read_csv(f"./defense/CIDER/output/{dataset}_analysis/simmatrix_clean_val.csv")
+        defender.train(data)
+        args.cider_threshold=defender.threshold
+        cossim=get_single_similarity_list(args,query,denoised_img_save_dir)
+        # print(cossim)
+        # print('cossim.shape',cossim.shape)
+        cossim=pd.DataFrame(cossim[0])
+        detection_result=defender.predict(cossim)
+        # print(detection_result)
+        if detection_result[0]==True:
+            return "I am sorry."
+        else:
+            return self.query(image,query)
