@@ -70,6 +70,9 @@ After generate completions from a `target_model` from Step 2, We will utilize th
 ./scripts/evaluate_completions.sh $cls_path $behaviors_path $completions_path $save_path
 ```
 
+We also provide a traing scripts of VLGuard for supervised fine-tunning.
+
+
 ## Acknowledgement and citation
 We thank the following open-source reposities.
 

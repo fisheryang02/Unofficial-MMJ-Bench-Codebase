@@ -1,0 +1,15 @@
+deepspeed scripts/sft_llava.py \
+    --deepspeed ds_zero2_no_offload.json \
+    --model_name_or_path ./base_checkpoints \
+    --per_device_train_batch_size 8 \
+    --gradient_accumulation_steps 4 \
+    --output_dir ./trained_checkpoints \
+    --bf16 \
+    --learning_rate 2e-5 \
+    --num_train_epochs 1 \
+    --torch_dtype bfloat16 \
+    --gradient_checkpointing \
+    --use_peft \
+    --dataloader_num_workers 32 \
+    --lora_r 128 \
+    --lora_alpha 256
